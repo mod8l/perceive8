@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from perceive9.config import (
+from perceive8.config import (
     DiarizationProvider,
     Language,
     TranscriptionProvider,

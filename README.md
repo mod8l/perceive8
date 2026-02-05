@@ -1,4 +1,4 @@
-# Perceive9
+# Perceive8
 
 API service for analyzing audio recordings with speaker identification and transcription.
 
@@ -24,7 +24,7 @@ API service for analyzing audio recordings with speaker identification and trans
 
 ```bash
 # Clone and enter directory
-cd perceive9
+cd perceive8
 
 # Create virtual environment
 python -m venv venv
@@ -47,7 +47,7 @@ See [services/README.md](services/README.md) for Railway setup.
 export DATABASE_URL=$(railway variables get DATABASE_URL)
 
 # Run locally
-uvicorn src.perceive9.main:app --reload
+uvicorn src.perceive8.main:app --reload
 ```
 
 ## API Endpoints

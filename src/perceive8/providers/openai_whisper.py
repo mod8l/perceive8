@@ -4,8 +4,8 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 
-from perceive9.config import Language
-from perceive9.providers.base import (
+from perceive8.config import Language
+from perceive8.providers.base import (
     TranscriptionProviderInterface,
     TranscriptionResult,
     TranscriptionSegment,

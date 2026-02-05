@@ -4,8 +4,8 @@ from typing import List, Optional
 
 import httpx
 
-from perceive9.config import Language
-from perceive9.providers.base import (
+from perceive8.config import Language
+from perceive8.providers.base import (
     DiarizationProviderInterface,
     DiarizationResult,
     DiarizationSegment,

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from perceive9.config import Language
+from perceive8.config import Language
 
 
 @dataclass

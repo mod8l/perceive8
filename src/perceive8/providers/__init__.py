@@ -1,6 +1,6 @@
 """Provider modules for diarization and transcription."""
 
-from perceive9.providers.base import (
+from perceive8.providers.base import (
     DiarizationProviderInterface,
     DiarizationResult,
     DiarizationSegment,
@@ -9,7 +9,7 @@ from perceive9.providers.base import (
     TranscriptionSegment,
     WordTimestamp,
 )
-from perceive9.providers.factory import get_diarization_provider, get_transcription_provider
+from perceive8.providers.factory import get_diarization_provider, get_transcription_provider
 
 __all__ = [
     "DiarizationProviderInterface",

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "perceive9"
+name = "perceive8"
 version = "0.1.0"
 description = "API service for analyzing audio recordings with speaker identification and transcription"
 readme = "README.md"
@@ -38,7 +38,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/perceive9"]
+packages = ["src/perceive8"]
 
 [tool.ruff]
 line-length = 100

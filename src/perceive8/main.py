@@ -2,13 +2,13 @@
 
 from fastapi import FastAPI
 
-from perceive9.config import get_settings
-from perceive9.routes import analysis, benchmark, health, query, speakers
+from perceive8.config import get_settings
+from perceive8.routes import analysis, benchmark, health, query, speakers
 
 settings = get_settings()
 
 app = FastAPI(
-    title="Perceive9 API",
+    title="Perceive8 API",
     description="Audio analysis API with speaker identification and transcription",
     version="0.1.0",
     debug=settings.debug,
