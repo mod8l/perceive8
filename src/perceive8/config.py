@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     pyannote_api_key: str = Field(default="")
     replicate_api_token: str = Field(default="")
 
+    # S3 Storage
+    s3_endpoint: str = Field(default="")
+    s3_bucket: str = Field(default="")
+    s3_access_key: str = Field(default="")
+    s3_secret_key: str = Field(default="")
+    s3_region: str = Field(default="")
+
     # Default providers
     default_diarization_provider: DiarizationProvider = Field(
         default=DiarizationProvider.PYANNOTE
