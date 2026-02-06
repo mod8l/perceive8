@@ -48,6 +48,10 @@ export DATABASE_URL=$(railway variables get DATABASE_URL)
 
 # Run locally
 uvicorn src.perceive8.main:app --reload
+
+# run that works:
+lsof -ti:8000 | xargs kill -9; sleep 1; 
+PYTHONPATH=src railway run .venv/bin/python -m uvicorn perceive8.main:app --reload
 ```
 
 ## API Endpoints
