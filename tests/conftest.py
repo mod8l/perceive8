@@ -29,11 +29,28 @@ def test_settings():
 
 
 @pytest.fixture
-async def async_client():
-    """Create async test client for FastAPI app."""
+def mock_db_session():
+    """Create a mock database session."""
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None), scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))), scalar=MagicMock(return_value=0)))
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    return session
+
+
+@pytest.fixture
+async def async_client(mock_db_session):
+    """Create async test client for FastAPI app with mocked database."""
+    from perceive8.database import get_db
+    
+    async def override_get_db():
+        yield mock_db_session
+    
+    app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
