@@ -1,7 +1,9 @@
 """Pyannote.ai provider for diarization and speaker embeddings."""
 
 import asyncio
+import base64
 import logging
+import struct
 import uuid
 from typing import List, Optional
 
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class PyannoteProvider(DiarizationProviderInterface):
-    """Pyannote.ai API provider for speaker diarization and embeddings."""
+    """Pyannote.ai API provider for speaker diarization and voiceprint embeddings."""
 
     BASE_URL = "https://api.pyannote.ai/v1"
 
@@ -143,24 +145,61 @@ class PyannoteProvider(DiarizationProviderInterface):
         model_name: Optional[str] = None,
     ) -> List[float]:
         """
-        Extract speaker embedding from audio sample.
+        Extract speaker voiceprint (embedding) using pyannote.ai /voiceprint endpoint.
+
+        See: https://docs.pyannote.ai/tutorials/identification-with-voiceprints
 
         Args:
             audio_path: Path to audio with single speaker
-            model_name: Embedding model version
+            model_name: Unused, kept for interface compatibility
 
         Returns:
-            Speaker embedding vector
+            Speaker embedding vector (voiceprint)
         """
         client = await self._get_client()
-        model = model_name or "pyannote/embedding"
 
         media_url = await self._upload_audio(audio_path)
-        response = await client.post("/embed", json={"url": media_url, "model": model})
-        response.raise_for_status()
-        result = response.json()
 
-        return result.get("embedding", [])
+        # Submit voiceprint job
+        response = await client.post("/voiceprint", json={"url": media_url})
+        logger.debug("Pyannote voiceprint response status=%s", response.status_code)
+
+        if response.status_code in (200, 201):
+            result = response.json()
+            # If async job, poll for completion
+            job_id = result.get("jobId")
+            if job_id:
+                result = await self._poll_job(client, job_id)
+        else:
+            response.raise_for_status()
+            result = {}
+
+        # The voiceprint is returned in the "output" field as base64-encoded float32 array
+        output = result.get("output", result)
+        if isinstance(output, dict):
+            voiceprint = output.get("voiceprint", output.get("embedding", ""))
+        elif isinstance(output, str):
+            voiceprint = output
+        elif isinstance(output, list):
+            # Already decoded as list of floats
+            if output and isinstance(output[0], (int, float)):
+                return [float(v) for v in output]
+            voiceprint = output[0] if output else ""
+        else:
+            return []
+
+        if isinstance(voiceprint, str) and voiceprint:
+            return self._decode_base64_embedding(voiceprint)
+        if isinstance(voiceprint, list):
+            return [float(v) for v in voiceprint]
+        return []
+
+    @staticmethod
+    def _decode_base64_embedding(b64_string: str) -> List[float]:
+        """Decode a base64-encoded float32 embedding vector."""
+        raw_bytes = base64.b64decode(b64_string)
+        num_floats = len(raw_bytes) // 4
+        return list(struct.unpack(f"<{num_floats}f", raw_bytes))
 
     async def close(self):
         """Close the HTTP client."""

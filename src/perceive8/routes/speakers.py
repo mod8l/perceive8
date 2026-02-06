@@ -1,44 +1,190 @@
 """Speaker management endpoints."""
 
+import logging
+import tempfile
+import uuid
 from typing import Optional
-from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from perceive8.config import get_settings
+from perceive8.database import get_db
+from perceive8.models.database import Speaker, User
+from perceive8.providers.pyannote import PyannoteProvider
+from perceive8.services.embedding import EmbeddingService
+from perceive8.services.preprocessing import preprocess_audio
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
+settings = get_settings()
+
+
+def _get_embedding_service(request: Request) -> EmbeddingService:
+    """Extract EmbeddingService from app state."""
+    svc = getattr(request.app.state, "embedding_service", None)
+    if svc is None:
+        raise HTTPException(status_code=503, detail="Embedding service not available")
+    return svc
+
+
+async def _get_or_create_user(db: AsyncSession, external_id: str) -> User:
+    """Get or create a user by external_id."""
+    result = await db.execute(select(User).where(User.external_id == external_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = User(external_id=external_id)
+        db.add(user)
+        await db.flush()
+    return user
 
 
 @router.post("")
 async def enroll_speaker(
+    request: Request,
     user_id: str = Form(...),
     name: str = Form(...),
     voice_sample: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
 ):
     """Enroll a new speaker with a voice sample."""
-    # TODO: Implement speaker enrollment
-    # 1. Save voice sample to storage
-    # 2. Extract embedding via pyannote.ai
-    # 3. Store embedding in ChromaDB
-    # 4. Create speaker record in PostgreSQL
-    return {"message": "Speaker enrollment not yet implemented"}
+    embedding_service = _get_embedding_service(request)
+
+    # Read uploaded audio
+    audio_bytes = await voice_sample.read()
+
+    # Write to temp file for preprocessing
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        # Preprocess audio
+        import os
+        tmp_dir = os.path.dirname(tmp_path)
+        preprocessing_result = await preprocess_audio(tmp_path, tmp_dir)
+        processed_path = preprocessing_result.output_path
+
+        # Extract embedding
+        provider = PyannoteProvider(api_key=settings.pyannote_api_key)
+        try:
+            embedding = await provider.get_speaker_embedding(processed_path)
+        finally:
+            await provider.close()
+
+        # Get or create user in DB
+        user = await _get_or_create_user(db, user_id)
+
+        # Create speaker record
+        speaker = Speaker(
+            user_id=user.id,
+            name=name,
+        )
+        db.add(speaker)
+        await db.flush()
+
+        speaker_chromadb_id = str(speaker.id)
+        speaker.chromadb_id = speaker_chromadb_id
+
+        # Store embedding in ChromaDB
+        embedding_service.add_speaker_embedding(
+            speaker_id=speaker_chromadb_id,
+            embedding=embedding,
+            metadata={"user_id": user_id, "name": name, "speaker_id": speaker_chromadb_id},
+        )
+
+        return {
+            "id": str(speaker.id),
+            "name": speaker.name,
+            "user_id": user_id,
+            "created_at": speaker.created_at.isoformat() if speaker.created_at else None,
+        }
+    finally:
+        # Clean up temp files
+        import os
+        for p in [tmp_path]:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 @router.get("")
-async def list_speakers(user_id: str, limit: int = 100, offset: int = 0):
+async def list_speakers(
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+):
     """List speakers for a user."""
-    # TODO: Query speakers from PostgreSQL
-    return {"speakers": [], "total": 0}
+    result = await db.execute(
+        select(Speaker)
+        .join(User, Speaker.user_id == User.id)
+        .where(User.external_id == user_id)
+        .limit(limit)
+        .offset(offset)
+    )
+    speakers = result.scalars().all()
+
+    count_result = await db.execute(
+        select(Speaker.id)
+        .join(User, Speaker.user_id == User.id)
+        .where(User.external_id == user_id)
+    )
+    total = len(count_result.all())
+
+    return {
+        "speakers": [
+            {
+                "id": str(s.id),
+                "name": s.name,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+            }
+            for s in speakers
+        ],
+        "total": total,
+    }
 
 
 @router.get("/{speaker_id}")
-async def get_speaker(speaker_id: UUID):
+async def get_speaker(
+    speaker_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
     """Get speaker details by ID."""
-    # TODO: Get speaker from PostgreSQL
-    raise HTTPException(status_code=404, detail="Speaker not found")
+    result = await db.execute(select(Speaker).where(Speaker.id == speaker_id))
+    speaker = result.scalar_one_or_none()
+    if speaker is None:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+
+    return {
+        "id": str(speaker.id),
+        "name": speaker.name,
+        "chromadb_id": speaker.chromadb_id,
+        "created_at": speaker.created_at.isoformat() if speaker.created_at else None,
+    }
 
 
 @router.delete("/{speaker_id}")
-async def delete_speaker(speaker_id: UUID):
+async def delete_speaker(
+    speaker_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Delete a speaker and their embedding."""
-    # TODO: Delete from PostgreSQL and ChromaDB
-    return {"message": "Speaker deletion not yet implemented"}
+    embedding_service = _get_embedding_service(request)
+
+    result = await db.execute(select(Speaker).where(Speaker.id == speaker_id))
+    speaker = result.scalar_one_or_none()
+    if speaker is None:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+
+    # Delete from ChromaDB
+    if speaker.chromadb_id:
+        embedding_service.delete_speaker_embedding(speaker.chromadb_id)
+
+    # Delete from PostgreSQL
+    await db.delete(speaker)
+
+    return {"message": "Speaker deleted", "id": str(speaker_id)}

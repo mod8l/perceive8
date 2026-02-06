@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     audio_storage_path: str = Field(default="./data/audio")
     chromadb_path: str = Field(default="./data/chromadb")
 
+    # ChromaDB remote (Railway). If chromadb_host is set, use HttpClient; else PersistentClient.
+    chromadb_host: str = Field(default="")
+    chromadb_port: int = Field(default=8000)
+    chromadb_token: str = Field(default="")
+
     # API Keys
     openai_api_key: str = Field(default="")
     pyannote_api_key: str = Field(default="")

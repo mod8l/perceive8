@@ -1,10 +1,11 @@
 """Analysis pipeline orchestrator."""
 
 import logging
+import tempfile
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from perceive8.config import Language
+from perceive8.config import Language, get_settings
 from perceive8.providers.base import (
     DiarizationResult,
     TranscriptionResult,
@@ -19,6 +20,9 @@ from perceive8.services.enhancement import (
 )
 from perceive8.services.preprocessing import PreprocessingResult, preprocess_audio
 from perceive8.services.storage import save_audio_file
+
+if TYPE_CHECKING:
+    from perceive8.services.embedding import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,79 @@ def merge_results(
     return merged
 
 
+async def match_speakers(
+    diarization_result: DiarizationResult,
+    audio_path: str,
+    embedding_service: "EmbeddingService",
+    user_id: str,
+    threshold: float = 0.8,
+) -> dict[str, str]:
+    """Match diarized speakers against enrolled speaker embeddings.
+
+    For each unique speaker label, find the longest segment, slice audio,
+    extract embedding, and query ChromaDB.
+
+    Returns:
+        Mapping from diarization label (e.g. SPEAKER_00) to matched name.
+    """
+    from pydub import AudioSegment
+
+    from perceive8.providers.pyannote import PyannoteProvider
+
+    settings = get_settings()
+    label_map: dict[str, str] = {}
+
+    # Group segments by speaker and find longest per speaker
+    speaker_segments: dict[str, list] = {}
+    for seg in diarization_result.segments:
+        speaker_segments.setdefault(seg.speaker_label, []).append(seg)
+
+    provider = PyannoteProvider(api_key=settings.pyannote_api_key)
+    try:
+        audio = AudioSegment.from_file(audio_path)
+
+        for label, segments in speaker_segments.items():
+            # Find longest segment
+            longest = max(segments, key=lambda s: s.end_time - s.start_time)
+            start_ms = int(longest.start_time * 1000)
+            end_ms = int(longest.end_time * 1000)
+            clip = audio[start_ms:end_ms]
+
+            # Write clip to temp file
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                clip.export(tmp.name, format="wav")
+                tmp_path = tmp.name
+
+            try:
+                embedding = await provider.get_speaker_embedding(tmp_path)
+                matches = embedding_service.search_similar_speakers(
+                    embedding=embedding,
+                    user_id=user_id,
+                    threshold=threshold,
+                )
+                if matches:
+                    best = matches[0]
+                    label_map[label] = best["metadata"].get("name", label)
+                    logger.info(
+                        "Matched %s -> %s (similarity=%.3f)",
+                        label,
+                        label_map[label],
+                        best["similarity"],
+                    )
+            except Exception:
+                logger.warning("Failed to match speaker %s", label, exc_info=True)
+            finally:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+    finally:
+        await provider.close()
+
+    return label_map
+
+
 async def run_analysis_pipeline(
     audio_data: bytes,
     filename: str,
@@ -102,6 +179,7 @@ async def run_analysis_pipeline(
     language: Language,
     diarization_provider,
     transcription_providers: list,
+    embedding_service: Optional["EmbeddingService"] = None,
 ) -> PipelineResult:
     """Run the full analysis pipeline.
 
@@ -172,10 +250,30 @@ async def run_analysis_pipeline(
         except Exception:
             logger.warning("Pipeline [%s]: transcription with %s failed", analysis_id, tp, exc_info=True)
 
-    # 7. Merge results
+    # 7. Match speakers against enrolled embeddings
+    speaker_label_map: dict[str, str] = {}
+    if diarization_result and embedding_service:
+        try:
+            logger.info("Pipeline [%s]: matching speakers", analysis_id)
+            speaker_label_map = await match_speakers(
+                diarization_result=diarization_result,
+                audio_path=audio_path,
+                embedding_service=embedding_service,
+                user_id=user_id,
+            )
+        except Exception:
+            logger.warning("Pipeline [%s]: speaker matching failed", analysis_id, exc_info=True)
+
+    # 8. Merge results
     merged_segments: List[MergedSegment] = []
     if diarization_result and transcription_results:
         merged_segments = merge_results(diarization_result, transcription_results[0])
+
+    # Apply speaker name mapping
+    if speaker_label_map:
+        for seg in merged_segments:
+            if seg.speaker_label in speaker_label_map:
+                seg.speaker_label = speaker_label_map[seg.speaker_label]
 
     return PipelineResult(
         original_path=original_path,

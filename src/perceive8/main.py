@@ -1,11 +1,14 @@
 """FastAPI application entry point."""
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from perceive8.config import get_settings
+from perceive8.services.embedding import EmbeddingService
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -13,11 +16,11 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events."""
     # Startup
-    # TODO: Initialize database connection pool
-    # TODO: Initialize ChromaDB collections
+    logger.info("Initializing EmbeddingService (chromadb_path=%s)", settings.chromadb_path)
+    app.state.embedding_service = EmbeddingService(settings)
     yield
     # Shutdown
-    pass
+    logger.info("Shutting down")
 
 
 app = FastAPI(
