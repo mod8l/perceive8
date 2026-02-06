@@ -65,22 +65,28 @@ class OpenAIWhisperProvider(TranscriptionProviderInterface):
         segments = []
         for seg in response.segments or []:
             words = []
-            for word_data in seg.get("words", []):
+            # seg may be a Pydantic model or a dict depending on SDK version
+            seg_data = seg if isinstance(seg, dict) else (seg.model_dump() if hasattr(seg, "model_dump") else seg.__dict__)
+            for word_data in seg_data.get("words", []):
+                if isinstance(word_data, dict):
+                    wd = word_data
+                else:
+                    wd = word_data.model_dump() if hasattr(word_data, "model_dump") else word_data.__dict__
                 words.append(
                     WordTimestamp(
-                        word=word_data["word"],
-                        start_time=word_data["start"],
-                        end_time=word_data["end"],
-                        confidence=word_data.get("probability"),
+                        word=wd["word"],
+                        start_time=wd["start"],
+                        end_time=wd["end"],
+                        confidence=wd.get("probability"),
                     )
                 )
 
             segments.append(
                 TranscriptionSegment(
-                    start_time=seg["start"],
-                    end_time=seg["end"],
-                    text=seg["text"],
-                    confidence=seg.get("avg_logprob"),
+                    start_time=seg_data["start"],
+                    end_time=seg_data["end"],
+                    text=seg_data["text"],
+                    confidence=seg_data.get("avg_logprob"),
                     words=words,
                 )
             )

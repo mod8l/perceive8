@@ -4,7 +4,7 @@ test:
 	PYTHONPATH=src poetry run pytest -v --ignore=tests/test_integration.py
 
 test-integration:
-	PYTHONPATH=src poetry run pytest -v tests/test_integration.py -m integration
+	PYTHONPATH=src railway run poetry run pytest -v -s tests/test_integration.py -m integration
 
 test-all:
 	PYTHONPATH=src poetry run pytest -v
