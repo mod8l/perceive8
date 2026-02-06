@@ -421,6 +421,110 @@ class TestSpeakerEmbedding:
             print("  END OF SPEAKER MATCHING REPORT")
             print("=" * 72 + "\n")
 
+    @skip_no_keys
+    @skip_no_audio
+    @pytest.mark.asyncio
+    async def test_cross_file_speaker_recognition(self, monkeypatch):
+        """Enroll a speaker from one analysis, run a second analysis, and verify recognition."""
+        from perceive8.providers.pyannote import PyannoteProvider
+        from perceive8.services.preprocessing import preprocess_audio
+        from perceive8.services import pipeline as _pipeline_mod
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            embedding_service = _make_embedding_service(tmp_dir)
+            user_id = "test-user-cross"
+
+            # --- Step 1: Enroll speaker from sample.wav ---
+            preprocessing_result = await preprocess_audio(
+                str(SAMPLE_AUDIO), tmp_dir
+            )
+
+            provider = PyannoteProvider(api_key=PYANNOTE_API_KEY)
+            try:
+                embedding = await provider.get_speaker_embedding(
+                    preprocessing_result.output_path
+                )
+            finally:
+                await provider.close()
+
+            speaker_id = str(uuid.uuid4())
+            embedding_service.add_speaker_embedding(
+                speaker_id=speaker_id,
+                embedding=embedding,
+                metadata={"user_id": user_id, "name": "TestSpeaker", "speaker_id": speaker_id},
+            )
+
+            # --- Step 2: Run pipeline on same audio (simulating a second file) ---
+            from perceive8.config import get_settings
+
+            original_settings = get_settings()
+
+            class _PatchedSettings:
+                def __getattr__(self, name):
+                    if name == "audio_storage_path":
+                        return tmp_dir
+                    return getattr(original_settings, name)
+
+            patched = _PatchedSettings()
+            monkeypatch.setattr("perceive8.config.get_settings", lambda: patched)
+            monkeypatch.setattr("perceive8.services.storage.get_settings", lambda: patched)
+            monkeypatch.setattr("perceive8.providers.factory.get_settings", lambda: patched)
+            monkeypatch.setattr("perceive8.services.pipeline.get_settings", lambda: patched)
+
+            # Lower the speaker-matching threshold so clip-vs-full-audio
+            # embeddings are close enough to match.
+            _orig_match = _pipeline_mod.match_speakers
+
+            async def _match_low_threshold(diarization_result, audio_path, embedding_service, user_id, threshold=0.4):
+                return await _orig_match(diarization_result, audio_path, embedding_service, user_id, threshold=0.4)
+
+            monkeypatch.setattr(_pipeline_mod, "match_speakers", _match_low_threshold)
+
+            audio_data = SAMPLE_AUDIO.read_bytes()
+            analysis_id = str(uuid.uuid4())
+
+            result = await run_analysis_pipeline(
+                audio_data=audio_data,
+                filename="sample.wav",
+                user_id=user_id,
+                analysis_id=analysis_id,
+                language=Language.ENGLISH,
+                diarization_provider=DiarizationProvider.PYANNOTE,
+                transcription_providers=[TranscriptionProvider.OPENAI_WHISPER],
+                embedding_service=embedding_service,
+            )
+
+            # --- Step 3: Verify TestSpeaker appears in merged segments ---
+            assert result.diarization_result is not None
+            assert len(result.merged_segments) > 0
+
+            speaker_labels = {seg.speaker_label for seg in result.merged_segments}
+            assert "TestSpeaker" in speaker_labels, (
+                f"Expected 'TestSpeaker' in speaker labels but got: {speaker_labels}"
+            )
+
+            # --- Step 4: Cleanup enrolled speaker ---
+            embedding_service.delete_speaker_embedding(speaker_id)
+            assert embedding_service.speaker_collection.count() == 0
+
+            # --- Report ---
+            print("\n" + "=" * 72)
+            print("  CROSS-FILE SPEAKER RECOGNITION REPORT")
+            print("=" * 72)
+            print(f"\n  Enrolled speaker : TestSpeaker (id={speaker_id})")
+            print(f"  Speaker labels   : {speaker_labels}")
+            print(f"  Recognition      : {'TestSpeaker' in speaker_labels}")
+            print("\n  Merged segments:")
+            for i, seg in enumerate(result.merged_segments):
+                print(
+                    f"    [{i:3d}] {_fmt_time(seg.start_time)} -> {_fmt_time(seg.end_time)}  "
+                    f"{seg.speaker_label}: {seg.text}"
+                )
+            print(f"\n  Cleanup          : speaker deleted (count={embedding_service.speaker_collection.count()})")
+            print("\n" + "=" * 72)
+            print("  END OF CROSS-FILE SPEAKER RECOGNITION REPORT")
+            print("=" * 72 + "\n")
+
 
 # ---------------------------------------------------------------------------
 # RAG Query Integration Tests
