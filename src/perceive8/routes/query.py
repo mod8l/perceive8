@@ -1,47 +1,42 @@
 """Query endpoints for RAG Q&A over transcripts."""
 
-from typing import List, Optional
-from uuid import UUID
-
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from perceive8.database import get_db
+from perceive8.models.database import Analysis, ProcessingRun, TranscriptSegment
+from perceive8.models.schemas import (
+    BackfillResponse,
+    QueryHistoryResponse,
+    QueryRequest,
+    QueryResponse,
+    SourceSegment,
+    TranscriptSegmentItem,
+)
 
 router = APIRouter()
 
 
-class QueryRequest(BaseModel):
-    question: str
-    analysis_id: Optional[str] = None
-
-
-class SourceSegment(BaseModel):
-    analysis_id: str
-    speaker_name: Optional[str] = None
-    start_time: float
-    end_time: float
-    text: str
-    relevance_score: float
-
-
-class QueryResponse(BaseModel):
-    answer: str
-    sources: List[SourceSegment]
-
-
-class BackfillResponse(BaseModel):
-    segments_embedded: int
-
-
 @router.post("", response_model=QueryResponse)
-async def query_transcripts(body: QueryRequest, request: Request):
+async def query_transcripts(
+    body: QueryRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Ask questions about transcripts using RAG.
 
     If analysis_id is omitted, searches across all analyses.
     """
+    # Validate analysis_id exists if provided
+    if body.analysis_id:
+        result = await db.execute(
+            select(Analysis).where(Analysis.id == body.analysis_id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
     query_service = getattr(request.app.state, "query_service", None)
     if query_service is None:
         raise HTTPException(status_code=503, detail="QueryService not available")
@@ -76,3 +71,48 @@ async def backfill_transcripts(
         raise HTTPException(status_code=502, detail=f"Backfill failed: {exc}") from exc
 
     return BackfillResponse(segments_embedded=count)
+
+
+@router.get("/history/{analysis_id}", response_model=QueryHistoryResponse)
+async def get_query_history(
+    analysis_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return transcript segments for a given analysis."""
+    # Validate analysis exists
+    result = await db.execute(
+        select(Analysis).where(Analysis.id == analysis_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    # Query segments via ProcessingRun, eagerly load speaker
+    from sqlalchemy.orm import selectinload
+
+    stmt = (
+        select(TranscriptSegment)
+        .join(ProcessingRun, TranscriptSegment.processing_run_id == ProcessingRun.id)
+        .where(ProcessingRun.analysis_id == analysis_id)
+        .options(selectinload(TranscriptSegment.speaker))
+        .order_by(TranscriptSegment.start_time)
+    )
+    result = await db.execute(stmt)
+    segments = result.scalars().all()
+
+    items = [
+        TranscriptSegmentItem(
+            id=str(seg.id),
+            text=seg.text,
+            speaker=seg.speaker.name if seg.speaker else None,
+            start_time=seg.start_time,
+            end_time=seg.end_time,
+            chromadb_id=seg.chromadb_id,
+        )
+        for seg in segments
+    ]
+
+    return QueryHistoryResponse(
+        analysis_id=analysis_id,
+        segments=items,
+        total=len(items),
+    )

@@ -1,9 +1,10 @@
 """Analysis endpoints."""
 
+import logging
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,9 +16,12 @@ from perceive8.config import (
     get_settings,
 )
 from perceive8.database import get_db
-from perceive8.models.database import Analysis, ProcessingRun
+from perceive8.models.database import Analysis, AudioFile, ProcessingRun, User
+from perceive8.models.schemas import AnalysisResponse
 from perceive8.services import analysis as analysis_service
+from perceive8.services.pipeline import run_analysis_pipeline
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 settings = get_settings()
 
@@ -65,6 +69,76 @@ async def create_analysis(
         "language": analysis.language,
         "created_at": analysis.created_at.isoformat(),
     }
+
+
+@router.post("/analyze", response_model=AnalysisResponse)
+async def analyze(
+    request: Request,
+    user_id: str = Form(...),
+    audio_file: UploadFile = File(...),
+    language: Optional[Language] = Form(default=None),
+    diarization_provider: Optional[DiarizationProvider] = Form(default=None),
+    transcription_providers: Optional[List[TranscriptionProvider]] = Form(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Submit audio for full pipeline analysis.
+
+    Creates Analysis and AudioFile DB records, runs the full analysis pipeline,
+    and returns the analysis result.
+    """
+    lang = language or settings.default_language
+    diar_provider = diarization_provider or settings.default_diarization_provider
+    trans_providers = transcription_providers or [settings.default_transcription_provider]
+
+    audio_data = await audio_file.read()
+    filename = audio_file.filename or "audio.wav"
+
+    # Get or create user
+    from perceive8.services.analysis import get_or_create_user
+
+    user = await get_or_create_user(db, user_id)
+
+    # Create Analysis record
+    analysis = Analysis(user_id=user.id, language=lang.value)
+    db.add(analysis)
+    await db.flush()
+
+    # Create AudioFile record
+    audio_file_record = AudioFile(
+        analysis_id=analysis.id,
+        original_path=filename,
+    )
+    db.add(audio_file_record)
+    await db.flush()
+
+    # Get optional services from app state
+    embedding_service = getattr(request.app.state, "embedding_service", None)
+    query_service = getattr(request.app.state, "query_service", None)
+
+    # Run the full pipeline
+    try:
+        await run_analysis_pipeline(
+            audio_data=audio_data,
+            filename=filename,
+            user_id=user_id,
+            analysis_id=str(analysis.id),
+            language=lang,
+            diarization_provider=diar_provider,
+            transcription_providers=trans_providers,
+            embedding_service=embedding_service,
+            query_service=query_service,
+            db_session=db,
+        )
+    except Exception as exc:
+        logger.error("Pipeline failed for analysis %s: %s", analysis.id, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Analysis pipeline failed: {exc}") from exc
+
+    return AnalysisResponse(
+        id=str(analysis.id),
+        language=analysis.language,
+        created_at=analysis.created_at.isoformat(),
+    )
 
 
 @router.get("")

@@ -73,26 +73,37 @@ async def enroll_speaker(
         finally:
             await provider.close()
 
-        # Get or create user in DB
-        user = await _get_or_create_user(db, user_id)
+        # Generate ID upfront so ChromaDB and PG share the same key
+        speaker_id = uuid.uuid4()
+        speaker_chromadb_id = str(speaker_id)
 
-        # Create speaker record
-        speaker = Speaker(
-            user_id=user.id,
-            name=name,
-        )
-        db.add(speaker)
-        await db.flush()
-
-        speaker_chromadb_id = str(speaker.id)
-        speaker.chromadb_id = speaker_chromadb_id
-
-        # Store embedding in ChromaDB
+        # Write to ChromaDB first
         embedding_service.add_speaker_embedding(
             speaker_id=speaker_chromadb_id,
             embedding=embedding,
             metadata={"user_id": user_id, "name": name, "speaker_id": speaker_chromadb_id},
         )
+
+        # Then write to PostgreSQL
+        try:
+            user = await _get_or_create_user(db, user_id)
+
+            speaker = Speaker(
+                id=speaker_id,
+                user_id=user.id,
+                name=name,
+                chromadb_id=speaker_chromadb_id,
+            )
+            db.add(speaker)
+            await db.flush()
+        except Exception:
+            # Compensating rollback: remove from ChromaDB if PG write fails
+            logger.warning("PG write failed for speaker %s, rolling back ChromaDB", speaker_chromadb_id)
+            try:
+                embedding_service.delete_speaker_embedding(speaker_chromadb_id)
+            except Exception:
+                logger.error("Failed to rollback ChromaDB for speaker %s", speaker_chromadb_id)
+            raise
 
         return {
             "id": str(speaker.id),

@@ -773,3 +773,38 @@ class TestRAGQuery:
                         )
                     )
                     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Replicate Provider Integration Tests
+# ---------------------------------------------------------------------------
+
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+
+skip_no_replicate = pytest.mark.skipif(
+    not REPLICATE_API_TOKEN,
+    reason="REPLICATE_API_TOKEN not set",
+)
+
+
+@pytest.mark.integration
+class TestReplicateProvider:
+    """Integration tests for Replicate provider availability."""
+
+    @skip_no_replicate
+    def test_replicate_diarization_provider_init(self):
+        """Verify ReplicateDiarizationProvider can be initialized with a valid token."""
+        from perceive8.providers.replicate import ReplicateDiarizationProvider
+
+        provider = ReplicateDiarizationProvider(api_token=REPLICATE_API_TOKEN)
+        assert provider.provider_name == "replicate"
+        assert provider.client is not None
+
+    @skip_no_replicate
+    def test_replicate_transcription_provider_init(self):
+        """Verify ReplicateTranscriptionProvider can be initialized with a valid token."""
+        from perceive8.providers.replicate import ReplicateTranscriptionProvider
+
+        provider = ReplicateTranscriptionProvider(api_token=REPLICATE_API_TOKEN)
+        assert provider.provider_name == "replicate"
+        assert provider.client is not None

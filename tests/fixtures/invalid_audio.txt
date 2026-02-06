@@ -1,0 +1,1 @@
+This is not a valid audio file. It is a plain text file pretending to be audio for error handling tests.

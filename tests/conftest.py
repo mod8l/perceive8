@@ -1,4 +1,19 @@
-"""Pytest fixtures for perceive8 tests."""
+"""Pytest fixtures for perceive8 tests.
+
+Test directory structure note:
+------------------------------
+The intended long-term structure is:
+    tests/
+        unit/          — fast, isolated unit tests (mocked dependencies)
+        integration/   — tests requiring real APIs or databases
+        fixtures/      — shared test data files
+        conftest.py    — shared fixtures
+
+Currently we use a flat layout with pytest markers (`@pytest.mark.integration`)
+to distinguish integration tests from unit tests.  This works well with pytest
+and avoids restructuring that could break CI.  Use `pytest -m integration` to
+run only integration tests or `pytest -m "not integration"` for unit tests.
+"""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock

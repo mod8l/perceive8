@@ -2,10 +2,19 @@
 
 import logging
 import tempfile
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from perceive8.config import Language, get_settings
+from perceive8.models.database import (
+    DiarizationSegment as DiarizationSegmentModel,
+    ProcessingRun,
+    TranscriptSegment as TranscriptSegmentModel,
+)
 from perceive8.providers.base import (
     DiarizationResult,
     TranscriptionResult,
@@ -38,6 +47,8 @@ class MergedSegment:
     text: str
     confidence: Optional[float] = None
     words: List[WordTimestamp] = field(default_factory=list)
+    matched_speaker_id: Optional[uuid.UUID] = None
+    matched_speaker_name: Optional[str] = None
 
 
 @dataclass
@@ -104,22 +115,24 @@ async def match_speakers(
     audio_path: str,
     embedding_service: "EmbeddingService",
     user_id: str,
-    threshold: float = 0.8,
-) -> dict[str, str]:
+    threshold: Optional[float] = None,
+) -> dict[str, dict]:
     """Match diarized speakers against enrolled speaker embeddings.
 
     For each unique speaker label, find the longest segment, slice audio,
     extract embedding, and query ChromaDB.
 
     Returns:
-        Mapping from diarization label (e.g. SPEAKER_00) to matched name.
+        Mapping from diarization label to dict with 'name' and 'speaker_id'.
     """
     from pydub import AudioSegment
 
     from perceive8.providers.pyannote import PyannoteProvider
 
     settings = get_settings()
-    label_map: dict[str, str] = {}
+    if threshold is None:
+        threshold = settings.speaker_match_threshold
+    label_map: dict[str, dict] = {}
 
     # Group segments by speaker and find longest per speaker
     speaker_segments: dict[str, list] = {}
@@ -151,11 +164,16 @@ async def match_speakers(
                 )
                 if matches:
                     best = matches[0]
-                    label_map[label] = best["metadata"].get("name", label)
+                    matched_name = best["metadata"].get("name", label)
+                    matched_id = best["metadata"].get("speaker_id") or best.get("speaker_id")
+                    label_map[label] = {
+                        "name": matched_name,
+                        "speaker_id": matched_id,
+                    }
                     logger.info(
                         "Matched %s -> %s (similarity=%.3f)",
                         label,
-                        label_map[label],
+                        matched_name,
                         best["similarity"],
                     )
             except Exception:
@@ -172,6 +190,94 @@ async def match_speakers(
     return label_map
 
 
+async def persist_pipeline_results(
+    db_session: AsyncSession,
+    result: "PipelineResult",
+    analysis_id: str,
+    speaker_label_map: Optional[dict[str, dict]] = None,
+) -> dict:
+    """Persist pipeline results to PostgreSQL.
+
+    Creates ProcessingRun, TranscriptSegment, and DiarizationSegment records.
+
+    Args:
+        db_session: SQLAlchemy async session.
+        result: The pipeline result to persist.
+        analysis_id: Analysis UUID string.
+        speaker_label_map: Mapping from diarization label to matched speaker info.
+
+    Returns:
+        Dict with created record references.
+    """
+    analysis_uuid = uuid.UUID(analysis_id)
+    now = datetime.utcnow()
+
+    # Create ProcessingRun
+    processing_run = ProcessingRun(
+        analysis_id=analysis_uuid,
+        run_type="full_pipeline",
+        provider_name="pipeline",
+        status="completed",
+        completed_at=now,
+    )
+    db_session.add(processing_run)
+    await db_session.flush()  # get processing_run.id
+
+    # Create TranscriptSegment records from merged segments
+    transcript_segments = []
+    for idx, seg in enumerate(result.merged_segments):
+        chromadb_id = f"{analysis_id}:{idx}"
+        ts = TranscriptSegmentModel(
+            processing_run_id=processing_run.id,
+            speaker_id=seg.matched_speaker_id,
+            start_time=seg.start_time,
+            end_time=seg.end_time,
+            text=seg.text,
+            confidence=seg.confidence,
+            word_timestamps=[
+                {"word": w.word, "start": w.start_time, "end": w.end_time, "confidence": w.confidence}
+                for w in seg.words
+            ] if seg.words else None,
+            chromadb_id=chromadb_id,
+        )
+        db_session.add(ts)
+        transcript_segments.append(ts)
+
+    # Create DiarizationSegment records from raw diarization results
+    diarization_segments = []
+    if result.diarization_result:
+        label_map = speaker_label_map or {}
+        for dseg in result.diarization_result.segments:
+            matched_id = None
+            match_info = label_map.get(dseg.speaker_label)
+            if match_info:
+                sid = match_info.get("speaker_id")
+                if sid:
+                    try:
+                        matched_id = uuid.UUID(sid) if isinstance(sid, str) else sid
+                    except (ValueError, TypeError):
+                        pass
+
+            ds = DiarizationSegmentModel(
+                processing_run_id=processing_run.id,
+                speaker_label=dseg.speaker_label,
+                matched_speaker_id=matched_id,
+                start_time=dseg.start_time,
+                end_time=dseg.end_time,
+                confidence=dseg.confidence,
+            )
+            db_session.add(ds)
+            diarization_segments.append(ds)
+
+    await db_session.commit()
+
+    return {
+        "processing_run": processing_run,
+        "transcript_segments": transcript_segments,
+        "diarization_segments": diarization_segments,
+    }
+
+
 async def run_analysis_pipeline(
     audio_data: bytes,
     filename: str,
@@ -182,6 +288,7 @@ async def run_analysis_pipeline(
     transcription_providers: list,
     embedding_service: Optional["EmbeddingService"] = None,
     query_service: Optional["QueryService"] = None,
+    db_session: Optional[AsyncSession] = None,
 ) -> PipelineResult:
     """Run the full analysis pipeline.
 
@@ -275,7 +382,15 @@ async def run_analysis_pipeline(
     if speaker_label_map:
         for seg in merged_segments:
             if seg.speaker_label in speaker_label_map:
-                seg.speaker_label = speaker_label_map[seg.speaker_label]
+                match_info = speaker_label_map[seg.speaker_label]
+                seg.matched_speaker_name = match_info["name"]
+                speaker_id_str = match_info.get("speaker_id")
+                if speaker_id_str:
+                    try:
+                        seg.matched_speaker_id = uuid.UUID(speaker_id_str)
+                    except (ValueError, TypeError):
+                        pass
+                seg.speaker_label = match_info["name"]
 
     # 9. Embed transcript segments for RAG
     if query_service and merged_segments:
@@ -294,7 +409,7 @@ async def run_analysis_pipeline(
         except Exception:
             logger.warning("Pipeline [%s]: transcript embedding failed", analysis_id, exc_info=True)
 
-    return PipelineResult(
+    pipeline_result = PipelineResult(
         original_path=original_path,
         enhanced_path=enhanced_path,
         was_enhanced=was_enhanced,
@@ -304,3 +419,18 @@ async def run_analysis_pipeline(
         transcription_results=transcription_results,
         merged_segments=merged_segments,
     )
+
+    # 10. Persist to DB if session provided
+    if db_session is not None:
+        try:
+            logger.info("Pipeline [%s]: persisting results to DB", analysis_id)
+            await persist_pipeline_results(
+                db_session=db_session,
+                result=pipeline_result,
+                analysis_id=analysis_id,
+                speaker_label_map=speaker_label_map,
+            )
+        except Exception:
+            logger.warning("Pipeline [%s]: DB persistence failed", analysis_id, exc_info=True)
+
+    return pipeline_result

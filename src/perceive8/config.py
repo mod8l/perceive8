@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     openai_chat_model: str = Field(default="gpt-4o-mini")
     rag_top_k: int = Field(default=5)
 
+    # Speaker matching
+    speaker_match_threshold: float = Field(default=0.8)
+
     # App settings
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")
