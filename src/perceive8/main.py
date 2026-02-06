@@ -35,10 +35,11 @@ app = FastAPI(
 )
 
 # Include routers
-from perceive8.routes import analysis, benchmark, health, query, speakers
+from perceive8.routes import analysis, benchmark, gdrive, health, query, speakers
 
 app.include_router(health.router, tags=["Health"])
 app.include_router(speakers.router, prefix="/speakers", tags=["Speakers"])
 app.include_router(analysis.router, prefix="/analysis", tags=["Analysis"])
 app.include_router(benchmark.router, prefix="/benchmark", tags=["Benchmark"])
 app.include_router(query.router, prefix="/query", tags=["Query"])
+app.include_router(gdrive.router, tags=["Google Drive"])

@@ -95,3 +95,39 @@ class QueryHistoryResponse(BaseModel):
     analysis_id: str
     segments: List[TranscriptSegmentItem]
     total: int
+
+
+# --- Google Drive schemas ---
+
+
+class GDriveFileInput(BaseModel):
+    """A single Google Drive file reference."""
+
+    file_id_or_url: str
+    language: Optional[str] = None
+
+
+class GDriveAnalyzeRequest(BaseModel):
+    """Request to analyze audio files from Google Drive."""
+
+    files: List[GDriveFileInput]
+    user_id: Optional[UUID] = None
+
+
+class GDriveFileResult(BaseModel):
+    """Result for a single file in the batch."""
+
+    file_id: str
+    filename: str
+    status: str  # success | error
+    analysis_id: Optional[UUID] = None
+    error: Optional[str] = None
+
+
+class GDriveAnalyzeResponse(BaseModel):
+    """Batch analysis response."""
+
+    results: List[GDriveFileResult]
+    total: int
+    succeeded: int
+    failed: int

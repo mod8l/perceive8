@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # Speaker matching
     speaker_match_threshold: float = Field(default=0.8)
 
+    # Google Drive
+    google_api_key: str = Field(default="")
+    gdrive_max_file_size_mb: int = Field(default=500)
+    gdrive_max_concurrent: int = Field(default=3)
+
     # App settings
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")
