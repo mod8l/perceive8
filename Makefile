@@ -1,4 +1,4 @@
-.PHONY: test test-integration test-all dev install
+.PHONY: test test-integration test-all dev install migrate
 
 test:
 	PYTHONPATH=src poetry run pytest -v --ignore=tests/test_integration.py
@@ -14,3 +14,6 @@ dev:
 
 install:
 	poetry install --with dev
+
+migrate:
+	PYTHONPATH=src railway run .venv/bin/python -m alembic upgrade head

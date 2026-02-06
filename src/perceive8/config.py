@@ -26,10 +26,11 @@ class TranscriptionProvider(str, Enum):
 class Settings(BaseSettings):
     # Database
     database_url: str = Field(default="postgresql://localhost:5432/conversation_analyzer")
+    database_public_url: str = Field(default="")
 
     # Storage paths
-    audio_storage_path: str = Field(default="/data/audio")
-    chromadb_path: str = Field(default="/data/chromadb")
+    audio_storage_path: str = Field(default="./data/audio")
+    chromadb_path: str = Field(default="./data/chromadb")
 
     # API Keys
     openai_api_key: str = Field(default="")

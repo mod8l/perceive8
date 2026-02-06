@@ -89,26 +89,32 @@ async def create_analysis(
 
     try:
         # Run diarization
-        diar_run = await run_diarization(
-            db=db,
-            analysis_id=analysis.id,
-            audio_path=temp_audio_path,
-            language=language,
-            provider=diarization_provider,
-            model_name=diarization_model,
-        )
-
-        # Run transcription for each provider
-        trans_models = transcription_models or [None] * len(transcription_providers)
-        for trans_provider, trans_model in zip(transcription_providers, trans_models):
-            await run_transcription(
+        try:
+            await run_diarization(
                 db=db,
                 analysis_id=analysis.id,
                 audio_path=temp_audio_path,
                 language=language,
-                provider=trans_provider,
-                model_name=trans_model,
+                provider=diarization_provider,
+                model_name=diarization_model,
             )
+        except Exception:
+            pass  # Error already recorded in processing_run
+
+        # Run transcription for each provider
+        trans_models = transcription_models or [None] * len(transcription_providers)
+        for trans_provider, trans_model in zip(transcription_providers, trans_models):
+            try:
+                await run_transcription(
+                    db=db,
+                    analysis_id=analysis.id,
+                    audio_path=temp_audio_path,
+                    language=language,
+                    provider=trans_provider,
+                    model_name=trans_model,
+                )
+            except Exception:
+                pass  # Error already recorded in processing_run
     finally:
         # Cleanup temp file
         shutil.rmtree(temp_dir, ignore_errors=True)

@@ -10,8 +10,8 @@ from perceive8.models.database import Base
 
 config = context.config
 
-# Set database URL from environment
-database_url = os.getenv("DATABASE_URL", "postgresql://localhost/conversation_analyzer")
+# Set database URL from environment (prefer public URL for local dev)
+database_url = os.getenv("DATABASE_PUBLIC_URL") or os.getenv("DATABASE_URL", "postgresql://localhost/conversation_analyzer")
 config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:

@@ -8,8 +8,8 @@ from perceive8.config import get_settings
 
 settings = get_settings()
 
-# Convert sync URL to async
-db_url = settings.database_url
+# Use public URL if available (for local dev), otherwise internal URL
+db_url = settings.database_public_url or settings.database_url
 if db_url.startswith("postgresql://"):
     db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
