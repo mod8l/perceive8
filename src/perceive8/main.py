@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from perceive8.config import get_settings
 from perceive8.services.embedding import EmbeddingService
+from perceive8.services.query import QueryService
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -18,6 +19,8 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Initializing EmbeddingService (chromadb_path=%s)", settings.chromadb_path)
     app.state.embedding_service = EmbeddingService(settings)
+    app.state.query_service = QueryService(app.state.embedding_service, settings)
+    logger.info("Initialized QueryService")
     yield
     # Shutdown
     logger.info("Shutting down")

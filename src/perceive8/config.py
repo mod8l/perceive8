@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # Default language
     default_language: Language = Field(default=Language.ENGLISH)
 
+    # RAG / OpenAI model settings
+    openai_embedding_model: str = Field(default="text-embedding-3-small")
+    openai_chat_model: str = Field(default="gpt-4o-mini")
+    rag_top_k: int = Field(default=5)
+
     # App settings
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")

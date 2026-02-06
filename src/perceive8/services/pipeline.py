@@ -23,6 +23,7 @@ from perceive8.services.storage import save_audio_file
 
 if TYPE_CHECKING:
     from perceive8.services.embedding import EmbeddingService
+    from perceive8.services.query import QueryService
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,7 @@ async def run_analysis_pipeline(
     diarization_provider,
     transcription_providers: list,
     embedding_service: Optional["EmbeddingService"] = None,
+    query_service: Optional["QueryService"] = None,
 ) -> PipelineResult:
     """Run the full analysis pipeline.
 
@@ -274,6 +276,23 @@ async def run_analysis_pipeline(
         for seg in merged_segments:
             if seg.speaker_label in speaker_label_map:
                 seg.speaker_label = speaker_label_map[seg.speaker_label]
+
+    # 9. Embed transcript segments for RAG
+    if query_service and merged_segments:
+        try:
+            logger.info("Pipeline [%s]: embedding %d transcript segments", analysis_id, len(merged_segments))
+            segment_dicts = [
+                {
+                    "speaker": seg.speaker_label,
+                    "start_time": seg.start_time,
+                    "end_time": seg.end_time,
+                    "text": seg.text,
+                }
+                for seg in merged_segments
+            ]
+            await query_service.embed_transcript_segments(analysis_id, segment_dicts)
+        except Exception:
+            logger.warning("Pipeline [%s]: transcript embedding failed", analysis_id, exc_info=True)
 
     return PipelineResult(
         original_path=original_path,

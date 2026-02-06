@@ -114,15 +114,17 @@ class EmbeddingService:
     def search_transcripts(
         self,
         query_embedding: list[float],
-        analysis_id: str,
+        analysis_id: Optional[str] = None,
         top_k: int = 5,
     ) -> list[dict]:
-        """Search transcript embeddings for a given analysis."""
-        results = self.transcript_collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where={"analysis_id": analysis_id},
-        )
+        """Search transcript embeddings, optionally filtered by analysis_id."""
+        query_kwargs: dict = {
+            "query_embeddings": [query_embedding],
+            "n_results": top_k,
+        }
+        if analysis_id is not None:
+            query_kwargs["where"] = {"analysis_id": analysis_id}
+        results = self.transcript_collection.query(**query_kwargs)
 
         matches: list[dict] = []
         if results and results["ids"] and results["ids"][0]:

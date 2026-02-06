@@ -3,22 +3,23 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from perceive8.database import get_db
 
 router = APIRouter()
 
 
 class QueryRequest(BaseModel):
-    user_id: str
     question: str
-    analysis_ids: Optional[List[UUID]] = None  # Filter to specific analyses
-    limit: int = 5  # Number of relevant segments to retrieve
+    analysis_id: Optional[str] = None
 
 
 class SourceSegment(BaseModel):
-    analysis_id: UUID
-    speaker_name: Optional[str]
+    analysis_id: str
+    speaker_name: Optional[str] = None
     start_time: float
     end_time: float
     text: str
@@ -30,25 +31,48 @@ class QueryResponse(BaseModel):
     sources: List[SourceSegment]
 
 
+class BackfillResponse(BaseModel):
+    segments_embedded: int
+
+
 @router.post("", response_model=QueryResponse)
-async def query_transcripts(request: QueryRequest):
+async def query_transcripts(body: QueryRequest, request: Request):
     """
     Ask questions about transcripts using RAG.
 
-    1. Embed the question using OpenAI embeddings
-    2. Search ChromaDB for relevant transcript segments
-    3. Build context from retrieved segments
-    4. Generate answer using LLM with context
-    5. Return answer with source citations
+    If analysis_id is omitted, searches across all analyses.
     """
-    # TODO: Implement RAG query
-    # 1. Get text embedding for question
-    # 2. Query ChromaDB transcript_embeddings collection
-    # 3. Retrieve full segment data from PostgreSQL
-    # 4. Build prompt with context
-    # 5. Call OpenAI GPT for answer generation
+    query_service = getattr(request.app.state, "query_service", None)
+    if query_service is None:
+        raise HTTPException(status_code=503, detail="QueryService not available")
 
-    return QueryResponse(
-        answer="RAG query not yet implemented",
-        sources=[],
-    )
+    try:
+        result = await query_service.answer_question(
+            question=body.question,
+            analysis_id=body.analysis_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Query failed: {exc}") from exc
+
+    sources = [
+        SourceSegment(**s) for s in result.get("sources", [])
+    ]
+    return QueryResponse(answer=result["answer"], sources=sources)
+
+
+@router.post("/backfill", response_model=BackfillResponse)
+async def backfill_transcripts(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill ChromaDB with transcript segments from PostgreSQL."""
+    query_service = getattr(request.app.state, "query_service", None)
+    if query_service is None:
+        raise HTTPException(status_code=503, detail="QueryService not available")
+
+    try:
+        count = await query_service.backfill_from_db(db)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Backfill failed: {exc}") from exc
+
+    return BackfillResponse(segments_embedded=count)

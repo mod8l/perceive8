@@ -420,3 +420,252 @@ class TestSpeakerEmbedding:
             print("\n" + "=" * 72)
             print("  END OF SPEAKER MATCHING REPORT")
             print("=" * 72 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# RAG Query Integration Tests
+# ---------------------------------------------------------------------------
+
+skip_no_openai = pytest.mark.skipif(
+    not OPENAI_API_KEY,
+    reason="OPENAI_API_KEY not set",
+)
+
+
+@pytest.mark.integration
+class TestRAGQuery:
+    """Integration tests for RAG query service."""
+
+    @skip_no_openai
+    @pytest.mark.asyncio
+    async def test_embed_and_search_transcripts(self):
+        """Embed sample segments and verify search returns relevant results."""
+        from perceive8.services.query import QueryService
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                chromadb_path=os.path.join(tmp_dir, "chromadb"),
+                database_url="sqlite+aiosqlite://",
+                openai_api_key=OPENAI_API_KEY,
+            )
+            embedding_service = EmbeddingService(settings)
+            query_service = QueryService(embedding_service, settings)
+
+            analysis_id = str(uuid.uuid4())
+            segments = [
+                {"speaker": "Alice", "start_time": 0.0, "end_time": 5.0, "text": "The quarterly revenue increased by twenty percent."},
+                {"speaker": "Bob", "start_time": 5.0, "end_time": 10.0, "text": "We need to hire more engineers for the backend team."},
+                {"speaker": "Alice", "start_time": 10.0, "end_time": 15.0, "text": "The marketing budget should be allocated to social media."},
+            ]
+
+            await query_service.embed_transcript_segments(analysis_id, segments)
+
+            # Verify segments are stored
+            assert embedding_service.transcript_collection.count() == 3
+
+            # Search for revenue-related content
+            query_embedding = await query_service.embed_text("What was the revenue growth?")
+            matches = embedding_service.search_transcripts(
+                query_embedding=query_embedding,
+                analysis_id=analysis_id,
+                top_k=2,
+            )
+
+            assert len(matches) >= 1
+            # The top match should be about revenue
+            assert "revenue" in matches[0]["metadata"]["text"].lower()
+
+            print("\n--- RAG Embed & Search Report ---")
+            print(f"  Segments embedded : {len(segments)}")
+            print(f"  Search matches    : {len(matches)}")
+            for m in matches:
+                print(f"    [{m['metadata']['speaker']}] {m['metadata']['text'][:60]} (sim={m['similarity']:.4f})")
+            print("  Status            : SUCCESS")
+
+    @skip_no_openai
+    @pytest.mark.asyncio
+    async def test_answer_question(self):
+        """Embed segments, ask a question, and verify the answer is relevant."""
+        from perceive8.services.query import QueryService
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                chromadb_path=os.path.join(tmp_dir, "chromadb"),
+                database_url="sqlite+aiosqlite://",
+                openai_api_key=OPENAI_API_KEY,
+            )
+            embedding_service = EmbeddingService(settings)
+            query_service = QueryService(embedding_service, settings)
+
+            analysis_id = str(uuid.uuid4())
+            segments = [
+                {"speaker": "Alice", "start_time": 0.0, "end_time": 5.0, "text": "The quarterly revenue increased by twenty percent compared to last year."},
+                {"speaker": "Bob", "start_time": 5.0, "end_time": 10.0, "text": "We should invest more in the engineering team to support growth."},
+                {"speaker": "Alice", "start_time": 10.0, "end_time": 15.0, "text": "I agree, let us also increase the marketing budget by ten percent."},
+            ]
+
+            await query_service.embed_transcript_segments(analysis_id, segments)
+
+            result = await query_service.answer_question(
+                question="What was the revenue increase?",
+                analysis_id=analysis_id,
+                top_k=3,
+            )
+
+            assert "answer" in result
+            assert "sources" in result
+            assert len(result["sources"]) > 0
+            # The answer should mention twenty percent or 20%
+            answer_lower = result["answer"].lower()
+            assert "twenty" in answer_lower or "20" in answer_lower
+
+            print("\n--- RAG Answer Report ---")
+            print(f"  Question : What was the revenue increase?")
+            print(f"  Answer   : {result['answer'][:200]}")
+            print(f"  Sources  : {len(result['sources'])}")
+            for s in result["sources"]:
+                print(f"    [{s['speaker_name']}] {s['text'][:60]} (score={s['relevance_score']:.4f})")
+            print("  Status   : SUCCESS")
+
+    @skip_no_openai
+    @pytest.mark.asyncio
+    async def test_cross_analysis_query(self):
+        """Embed segments from two analyses, query without analysis_id, verify cross-analysis results."""
+        from perceive8.services.query import QueryService
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                chromadb_path=os.path.join(tmp_dir, "chromadb"),
+                database_url="sqlite+aiosqlite://",
+                openai_api_key=OPENAI_API_KEY,
+            )
+            embedding_service = EmbeddingService(settings)
+            query_service = QueryService(embedding_service, settings)
+
+            analysis_id_1 = str(uuid.uuid4())
+            analysis_id_2 = str(uuid.uuid4())
+
+            segments_1 = [
+                {"speaker": "Alice", "start_time": 0.0, "end_time": 5.0, "text": "The quarterly revenue increased by twenty percent."},
+            ]
+            segments_2 = [
+                {"speaker": "Bob", "start_time": 0.0, "end_time": 5.0, "text": "We need to hire more engineers for the backend team."},
+            ]
+
+            await query_service.embed_transcript_segments(analysis_id_1, segments_1)
+            await query_service.embed_transcript_segments(analysis_id_2, segments_2)
+
+            assert embedding_service.transcript_collection.count() == 2
+
+            # Search without analysis_id — should return results from both
+            query_embedding = await query_service.embed_text("revenue and hiring")
+            matches = embedding_service.search_transcripts(
+                query_embedding=query_embedding,
+                analysis_id=None,
+                top_k=5,
+            )
+
+            assert len(matches) == 2
+            matched_analysis_ids = {m["metadata"]["analysis_id"] for m in matches}
+            assert analysis_id_1 in matched_analysis_ids
+            assert analysis_id_2 in matched_analysis_ids
+
+            print("\n--- Cross-Analysis Query Report ---")
+            print(f"  Analysis IDs found : {matched_analysis_ids}")
+            print(f"  Matches            : {len(matches)}")
+            print("  Status             : SUCCESS")
+
+    @skip_no_openai
+    @pytest.mark.asyncio
+    async def test_backfill_from_db(self):
+        """Test backfill_from_db against the real PostgreSQL database."""
+        from perceive8.services.query import QueryService
+        from perceive8.database import async_session_maker
+        from perceive8.models.database import (
+            Base,
+            User,
+            Analysis,
+            ProcessingRun,
+            TranscriptSegment,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                chromadb_path=os.path.join(tmp_dir, "chromadb"),
+                database_url="sqlite+aiosqlite://",
+                openai_api_key=OPENAI_API_KEY,
+            )
+            embedding_service = EmbeddingService(settings)
+            query_service = QueryService(embedding_service, settings)
+
+            # Insert test data into the real PostgreSQL database
+            test_user_id = uuid.uuid4()
+            test_analysis_id = uuid.uuid4()
+            test_run_id = uuid.uuid4()
+            seg1_id = uuid.uuid4()
+            seg2_id = uuid.uuid4()
+
+            async with async_session_maker() as db:
+                # Create parent records to satisfy FK constraints
+                db.add(User(id=test_user_id, external_id=f"backfill-test-{test_user_id}"))
+                db.add(Analysis(id=test_analysis_id, user_id=test_user_id, language="en"))
+                db.add(ProcessingRun(
+                    id=test_run_id,
+                    analysis_id=test_analysis_id,
+                    run_type="transcription",
+                    provider_name="test",
+                    status="completed",
+                ))
+                db.add(TranscriptSegment(
+                    id=seg1_id,
+                    processing_run_id=test_run_id,
+                    start_time=0.0,
+                    end_time=3.0,
+                    text="The project deadline is next Friday.",
+                ))
+                db.add(TranscriptSegment(
+                    id=seg2_id,
+                    processing_run_id=test_run_id,
+                    start_time=3.0,
+                    end_time=6.0,
+                    text="We should allocate more budget to marketing.",
+                ))
+                await db.commit()
+
+            try:
+                # Run backfill against real DB
+                async with async_session_maker() as db:
+                    count = await query_service.backfill_from_db(db)
+
+                # At minimum our 2 test segments should be embedded;
+                # there may be more from other test runs.
+                assert count >= 2
+                assert embedding_service.transcript_collection.count() >= 2
+
+                print("\n--- Backfill Report ---")
+                print(f"  Segments backfilled : {count}")
+                print("  Status              : SUCCESS")
+            finally:
+                # Clean up test data
+                async with async_session_maker() as db:
+                    await db.execute(
+                        TranscriptSegment.__table__.delete().where(
+                            TranscriptSegment.processing_run_id == test_run_id
+                        )
+                    )
+                    await db.execute(
+                        ProcessingRun.__table__.delete().where(
+                            ProcessingRun.id == test_run_id
+                        )
+                    )
+                    await db.execute(
+                        Analysis.__table__.delete().where(
+                            Analysis.id == test_analysis_id
+                        )
+                    )
+                    await db.execute(
+                        User.__table__.delete().where(
+                            User.id == test_user_id
+                        )
+                    )
+                    await db.commit()
