@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings
 
 
 class Language(str, Enum):
+    AUTO = "auto"
     ENGLISH = "en"
     HEBREW = "he"
     SPANISH = "es"

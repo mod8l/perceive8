@@ -9,6 +9,10 @@ from perceive8.config import get_settings
 from perceive8.services.embedding import EmbeddingService
 from perceive8.services.query import QueryService
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 settings = get_settings()
 

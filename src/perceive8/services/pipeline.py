@@ -2,6 +2,7 @@
 
 import logging
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -310,41 +311,56 @@ async def run_analysis_pipeline(
     import os
     from pathlib import Path
 
+    pipeline_start = time.monotonic()
+
+    # Convert 'auto' language to None so providers use auto-detection
+    provider_language = None if language == Language.AUTO else language
+
     # 1. Store original
     logger.info("Pipeline [%s]: storing original file", analysis_id)
+    t0 = time.monotonic()
     storage_result = await save_audio_file(audio_data, filename, user_id, analysis_id)
     original_path = storage_result.file_path
+    logger.info("Pipeline [%s]: file stored in %.2fs", analysis_id, time.monotonic() - t0)
 
     # 2. Preprocess
-    logger.info("Pipeline [%s]: preprocessing", analysis_id)
+    logger.info("Pipeline [%s]: Starting preprocessing...", analysis_id)
+    t0 = time.monotonic()
     output_dir = str(Path(original_path).parent)
     preprocessing_info = await preprocess_audio(original_path, output_dir)
     audio_path = preprocessing_info.output_path
+    logger.info("Pipeline [%s]: Preprocessing complete in %.2fs", analysis_id, time.monotonic() - t0)
 
     # 3. Quality check
-    logger.info("Pipeline [%s]: analyzing quality", analysis_id)
+    logger.info("Pipeline [%s]: Starting quality analysis...", analysis_id)
+    t0 = time.monotonic()
     quality_info = await analyze_audio_quality(audio_path)
+    logger.info("Pipeline [%s]: Quality analysis complete in %.2fs (SNR=%.1f dB)", analysis_id, time.monotonic() - t0, quality_info.snr_db)
 
     # 4. Enhance if needed
     enhanced_path: Optional[str] = None
     was_enhanced = False
     if quality_info.needs_enhancement:
-        logger.info("Pipeline [%s]: enhancing audio (SNR=%.1f dB)", analysis_id, quality_info.snr_db)
+        logger.info("Pipeline [%s]: Starting audio enhancement (SNR=%.1f dB)...", analysis_id, quality_info.snr_db)
+        t0 = time.monotonic()
         try:
             enhancement_result = await enhance_audio(audio_path, output_dir)
             was_enhanced = enhancement_result.was_enhanced
             if was_enhanced:
                 enhanced_path = enhancement_result.output_path
                 audio_path = enhanced_path
+            logger.info("Pipeline [%s]: Enhancement complete in %.2fs (enhanced=%s)", analysis_id, time.monotonic() - t0, was_enhanced)
         except Exception:
             logger.warning("Pipeline [%s]: enhancement failed, continuing with original", analysis_id, exc_info=True)
 
     # 5. Run diarization
     diarization_result: Optional[DiarizationResult] = None
     try:
-        logger.info("Pipeline [%s]: running diarization", analysis_id)
+        logger.info("Pipeline [%s]: Starting diarization...", analysis_id)
+        t0 = time.monotonic()
         provider = get_diarization_provider(diarization_provider)
-        diarization_result = await provider.diarize(audio_path, language)
+        diarization_result = await provider.diarize(audio_path, provider_language)
+        logger.info("Pipeline [%s]: Diarization complete in %.2fs (%d segments)", analysis_id, time.monotonic() - t0, len(diarization_result.segments) if diarization_result else 0)
     except Exception:
         logger.warning("Pipeline [%s]: diarization failed", analysis_id, exc_info=True)
 
@@ -352,10 +368,12 @@ async def run_analysis_pipeline(
     transcription_results: List[TranscriptionResult] = []
     for tp in transcription_providers:
         try:
-            logger.info("Pipeline [%s]: running transcription with %s", analysis_id, tp)
+            logger.info("Pipeline [%s]: Starting transcription with %s...", analysis_id, tp)
+            t0 = time.monotonic()
             provider = get_transcription_provider(tp)
-            result = await provider.transcribe(audio_path, language)
+            result = await provider.transcribe(audio_path, provider_language)
             transcription_results.append(result)
+            logger.info("Pipeline [%s]: Transcription with %s complete in %.2fs (%d segments)", analysis_id, tp, time.monotonic() - t0, len(result.segments))
         except Exception:
             logger.warning("Pipeline [%s]: transcription with %s failed", analysis_id, tp, exc_info=True)
 
@@ -363,20 +381,24 @@ async def run_analysis_pipeline(
     speaker_label_map: dict[str, str] = {}
     if diarization_result and embedding_service:
         try:
-            logger.info("Pipeline [%s]: matching speakers", analysis_id)
+            logger.info("Pipeline [%s]: Starting speaker matching...", analysis_id)
+            t0 = time.monotonic()
             speaker_label_map = await match_speakers(
                 diarization_result=diarization_result,
                 audio_path=audio_path,
                 embedding_service=embedding_service,
                 user_id=user_id,
             )
+            logger.info("Pipeline [%s]: Speaker matching complete in %.2fs (%d matched)", analysis_id, time.monotonic() - t0, len(speaker_label_map))
         except Exception:
             logger.warning("Pipeline [%s]: speaker matching failed", analysis_id, exc_info=True)
 
     # 8. Merge results
     merged_segments: List[MergedSegment] = []
     if diarization_result and transcription_results:
+        logger.info("Pipeline [%s]: Merging diarization and transcription results...", analysis_id)
         merged_segments = merge_results(diarization_result, transcription_results[0])
+        logger.info("Pipeline [%s]: Merge complete — %d merged segments", analysis_id, len(merged_segments))
 
     # Apply speaker name mapping
     if speaker_label_map:
@@ -395,7 +417,8 @@ async def run_analysis_pipeline(
     # 9. Embed transcript segments for RAG
     if query_service and merged_segments:
         try:
-            logger.info("Pipeline [%s]: embedding %d transcript segments", analysis_id, len(merged_segments))
+            logger.info("Pipeline [%s]: Starting embedding of %d transcript segments...", analysis_id, len(merged_segments))
+            t0 = time.monotonic()
             segment_dicts = [
                 {
                     "speaker": seg.speaker_label,
@@ -406,6 +429,7 @@ async def run_analysis_pipeline(
                 for seg in merged_segments
             ]
             await query_service.embed_transcript_segments(analysis_id, segment_dicts)
+            logger.info("Pipeline [%s]: Embedding complete in %.2fs", analysis_id, time.monotonic() - t0)
         except Exception:
             logger.warning("Pipeline [%s]: transcript embedding failed", analysis_id, exc_info=True)
 
@@ -423,14 +447,17 @@ async def run_analysis_pipeline(
     # 10. Persist to DB if session provided
     if db_session is not None:
         try:
-            logger.info("Pipeline [%s]: persisting results to DB", analysis_id)
+            logger.info("Pipeline [%s]: Persisting results to DB...", analysis_id)
+            t0 = time.monotonic()
             await persist_pipeline_results(
                 db_session=db_session,
                 result=pipeline_result,
                 analysis_id=analysis_id,
                 speaker_label_map=speaker_label_map,
             )
+            logger.info("Pipeline [%s]: DB persistence complete in %.2fs", analysis_id, time.monotonic() - t0)
         except Exception:
             logger.warning("Pipeline [%s]: DB persistence failed", analysis_id, exc_info=True)
 
+    logger.info("Pipeline [%s]: All steps complete — total time %.2fs", analysis_id, time.monotonic() - pipeline_start)
     return pipeline_result

@@ -1,5 +1,7 @@
 """Query endpoints for RAG Q&A over transcripts."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,7 @@ from perceive8.models.schemas import (
     TranscriptSegmentItem,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -29,6 +32,7 @@ async def query_transcripts(
 
     If analysis_id is omitted, searches across all analyses.
     """
+    logger.info("Query received: question=%r, analysis_id=%s", body.question, body.analysis_id)
     # Validate analysis_id exists if provided
     if body.analysis_id:
         result = await db.execute(
@@ -52,6 +56,7 @@ async def query_transcripts(
     sources = [
         SourceSegment(**s) for s in result.get("sources", [])
     ]
+    logger.info("Query response sent: %d sources returned", len(sources))
     return QueryResponse(answer=result["answer"], sources=sources)
 
 

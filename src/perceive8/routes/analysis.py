@@ -94,6 +94,11 @@ async def analyze(
     audio_data = await audio_file.read()
     filename = audio_file.filename or "audio.wav"
 
+    logger.info(
+        "POST /analysis/analyze — filename=%s, file_size=%d bytes, user_id=%s",
+        filename, len(audio_data), user_id,
+    )
+
     # Get or create user
     from perceive8.services.analysis import get_or_create_user
 
@@ -117,6 +122,7 @@ async def analyze(
     query_service = getattr(request.app.state, "query_service", None)
 
     # Run the full pipeline
+    logger.info("Starting analysis pipeline for user_id=%s, filename=%s", user_id, filename)
     try:
         await run_analysis_pipeline(
             audio_data=audio_data,
@@ -134,6 +140,7 @@ async def analyze(
         logger.error("Pipeline failed for analysis %s: %s", analysis.id, exc, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Analysis pipeline failed: {exc}") from exc
 
+    logger.info("Analysis pipeline completed for analysis_id=%s", analysis.id)
     return AnalysisResponse(
         id=str(analysis.id),
         language=analysis.language,

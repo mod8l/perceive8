@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "perceive8-chat-ui"
+package-mode = false
+version = "0.1.0"
+description = "Chainlit-based chat UI for perceive8 API"
+authors = ["perceive8"]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+chainlit = ">=1.0.0"
+httpx = ">=0.25.0"
+python-dotenv = ">=1.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
