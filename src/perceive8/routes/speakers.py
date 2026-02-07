@@ -161,10 +161,15 @@ async def list_speakers(
 @router.get("/{speaker_id}")
 async def get_speaker(
     speaker_id: uuid.UUID,
+    user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get speaker details by ID."""
-    result = await db.execute(select(Speaker).where(Speaker.id == speaker_id))
+    """Get speaker details by ID (scoped to user_id)."""
+    result = await db.execute(
+        select(Speaker)
+        .join(User, Speaker.user_id == User.id)
+        .where(Speaker.id == speaker_id, User.external_id == user_id)
+    )
     speaker = result.scalar_one_or_none()
     if speaker is None:
         raise HTTPException(status_code=404, detail="Speaker not found")
@@ -180,13 +185,18 @@ async def get_speaker(
 @router.delete("/{speaker_id}")
 async def delete_speaker(
     speaker_id: uuid.UUID,
+    user_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a speaker and their embedding."""
+    """Delete a speaker and their embedding (scoped to user_id)."""
     embedding_service = _get_embedding_service(request)
 
-    result = await db.execute(select(Speaker).where(Speaker.id == speaker_id))
+    result = await db.execute(
+        select(Speaker)
+        .join(User, Speaker.user_id == User.id)
+        .where(Speaker.id == speaker_id, User.external_id == user_id)
+    )
     speaker = result.scalar_one_or_none()
     if speaker is None:
         raise HTTPException(status_code=404, detail="Speaker not found")

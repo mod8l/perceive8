@@ -103,6 +103,67 @@ def test_threshold_filtering(embedding_service):
     assert len(results) == 0
 
 
+def test_add_and_search_transcript_embedding_with_user_id(embedding_service):
+    """Transcript search should be scoped by user_id."""
+    embedding = [0.4] * 256
+    embedding_service.add_transcript_embedding(
+        segment_id="seg-1",
+        embedding=embedding,
+        metadata={"user_id": "user1", "analysis_id": "a-1", "speaker": "Alice", "start_time": 0.0, "end_time": 5.0, "text": "Hello"},
+    )
+    embedding_service.add_transcript_embedding(
+        segment_id="seg-2",
+        embedding=embedding,
+        metadata={"user_id": "user2", "analysis_id": "a-2", "speaker": "Bob", "start_time": 0.0, "end_time": 5.0, "text": "World"},
+    )
+
+    # user1 should only see their own segment
+    results = embedding_service.search_transcripts(
+        query_embedding=embedding,
+        user_id="user1",
+    )
+    assert len(results) >= 1
+    assert all(r["metadata"]["user_id"] == "user1" for r in results)
+
+    # user2 should only see their own segment
+    results = embedding_service.search_transcripts(
+        query_embedding=embedding,
+        user_id="user2",
+    )
+    assert len(results) >= 1
+    assert all(r["metadata"]["user_id"] == "user2" for r in results)
+
+    # non-existent user should see nothing
+    results = embedding_service.search_transcripts(
+        query_embedding=embedding,
+        user_id="user-nonexistent",
+    )
+    assert len(results) == 0
+
+
+def test_search_transcripts_with_analysis_id_filter(embedding_service):
+    """Transcript search with analysis_id should narrow within user scope."""
+    embedding = [0.5] * 256
+    embedding_service.add_transcript_embedding(
+        segment_id="seg-a1",
+        embedding=embedding,
+        metadata={"user_id": "user1", "analysis_id": "a-1", "speaker": "Alice", "start_time": 0.0, "end_time": 5.0, "text": "Hello"},
+    )
+    embedding_service.add_transcript_embedding(
+        segment_id="seg-a2",
+        embedding=embedding,
+        metadata={"user_id": "user1", "analysis_id": "a-2", "speaker": "Alice", "start_time": 0.0, "end_time": 5.0, "text": "World"},
+    )
+
+    results = embedding_service.search_transcripts(
+        query_embedding=embedding,
+        user_id="user1",
+        analysis_id="a-1",
+    )
+    assert len(results) >= 1
+    assert all(r["metadata"]["analysis_id"] == "a-1" for r in results)
+
+
 # --- Speaker matching tests ---
 
 
@@ -150,8 +211,8 @@ async def test_match_speakers_replaces_labels():
             user_id="user1",
         )
 
-    assert label_map["SPEAKER_00"] == "Alice"
-    assert label_map["SPEAKER_01"] == "Alice"
+    assert label_map["SPEAKER_00"]["name"] == "Alice"
+    assert label_map["SPEAKER_01"]["name"] == "Alice"
 
 
 @pytest.mark.asyncio
