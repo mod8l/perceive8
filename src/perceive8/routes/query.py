@@ -1,13 +1,14 @@
 """Query endpoints for RAG Q&A over transcripts."""
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from perceive8.database import get_db
-from perceive8.models.database import Analysis, ProcessingRun, TranscriptSegment
+from perceive8.models.database import Analysis, ProcessingRun, TranscriptSegment, User
 from perceive8.models.schemas import (
     BackfillResponse,
     QueryHistoryResponse,
@@ -32,11 +33,13 @@ async def query_transcripts(
 
     If analysis_id is omitted, searches across all analyses.
     """
-    logger.info("Query received: question=%r, analysis_id=%s", body.question, body.analysis_id)
-    # Validate analysis_id exists if provided
+    logger.info("Query received: user_id=%s, question=%r, analysis_id=%s", body.user_id, body.question, body.analysis_id)
+    # Validate analysis_id exists and belongs to user if provided
     if body.analysis_id:
         result = await db.execute(
-            select(Analysis).where(Analysis.id == body.analysis_id)
+            select(Analysis)
+            .join(User, Analysis.user_id == User.id)
+            .where(Analysis.id == body.analysis_id, User.external_id == body.user_id)
         )
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Analysis not found")
@@ -48,6 +51,7 @@ async def query_transcripts(
     try:
         result = await query_service.answer_question(
             question=body.question,
+            user_id=body.user_id,
             analysis_id=body.analysis_id,
         )
     except Exception as exc:
@@ -63,15 +67,19 @@ async def query_transcripts(
 @router.post("/backfill", response_model=BackfillResponse)
 async def backfill_transcripts(
     request: Request,
+    user_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Backfill ChromaDB with transcript segments from PostgreSQL."""
+    """Backfill ChromaDB with transcript segments from PostgreSQL.
+
+    If user_id is provided, only backfills segments for that user.
+    """
     query_service = getattr(request.app.state, "query_service", None)
     if query_service is None:
         raise HTTPException(status_code=503, detail="QueryService not available")
 
     try:
-        count = await query_service.backfill_from_db(db)
+        count = await query_service.backfill_from_db(db, user_id=user_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Backfill failed: {exc}") from exc
 
@@ -81,12 +89,15 @@ async def backfill_transcripts(
 @router.get("/history/{analysis_id}", response_model=QueryHistoryResponse)
 async def get_query_history(
     analysis_id: str,
+    user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Return transcript segments for a given analysis."""
-    # Validate analysis exists
+    """Return transcript segments for a given analysis (scoped to user_id)."""
+    # Validate analysis exists and belongs to user
     result = await db.execute(
-        select(Analysis).where(Analysis.id == analysis_id)
+        select(Analysis)
+        .join(User, Analysis.user_id == User.id)
+        .where(Analysis.id == analysis_id, User.external_id == user_id)
     )
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Analysis not found")

@@ -193,13 +193,15 @@ async def list_analyses(
 @router.get("/{analysis_id}")
 async def get_analysis(
     analysis_id: UUID,
+    user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get analysis details including all processing runs."""
+    """Get analysis details including all processing runs (scoped to user_id)."""
     result = await db.execute(
         select(Analysis)
+        .join(User, Analysis.user_id == User.id)
         .options(selectinload(Analysis.processing_runs))
-        .where(Analysis.id == analysis_id)
+        .where(Analysis.id == analysis_id, User.external_id == user_id)
     )
     analysis = result.scalar_one_or_none()
     if not analysis:
@@ -226,9 +228,19 @@ async def get_analysis(
 @router.get("/{analysis_id}/runs")
 async def get_processing_runs(
     analysis_id: UUID,
+    user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get all processing runs for an analysis (for model comparison)."""
+    """Get all processing runs for an analysis (scoped to user_id)."""
+    # Verify analysis belongs to user
+    analysis_result = await db.execute(
+        select(Analysis)
+        .join(User, Analysis.user_id == User.id)
+        .where(Analysis.id == analysis_id, User.external_id == user_id)
+    )
+    if analysis_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
     result = await db.execute(
         select(ProcessingRun).where(ProcessingRun.analysis_id == analysis_id)
     )
@@ -253,10 +265,20 @@ async def get_processing_runs(
 async def get_processing_run(
     analysis_id: UUID,
     run_id: UUID,
+    user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific processing run with its segments."""
+    """Get a specific processing run with its segments (scoped to user_id)."""
     from perceive8.models.database import DiarizationSegment, TranscriptSegment
+
+    # Verify analysis belongs to user
+    analysis_result = await db.execute(
+        select(Analysis)
+        .join(User, Analysis.user_id == User.id)
+        .where(Analysis.id == analysis_id, User.external_id == user_id)
+    )
+    if analysis_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
 
     result = await db.execute(
         select(ProcessingRun)

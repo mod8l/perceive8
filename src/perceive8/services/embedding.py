@@ -104,7 +104,12 @@ class EmbeddingService:
     def add_transcript_embedding(
         self, segment_id: str, embedding: list[float], metadata: dict
     ) -> None:
-        """Upsert a transcript segment embedding for future RAG."""
+        """Upsert a transcript segment embedding for future RAG.
+
+        metadata must include 'user_id' to ensure proper data isolation.
+        """
+        if "user_id" not in metadata:
+            logger.warning("Transcript embedding %s missing user_id in metadata", segment_id)
         self.transcript_collection.upsert(
             ids=[segment_id],
             embeddings=[embedding],
@@ -114,16 +119,23 @@ class EmbeddingService:
     def search_transcripts(
         self,
         query_embedding: list[float],
+        user_id: str,
         analysis_id: Optional[str] = None,
         top_k: int = 5,
     ) -> list[dict]:
-        """Search transcript embeddings, optionally filtered by analysis_id."""
+        """Search transcript embeddings scoped to a user_id.
+
+        Always filters by user_id for data isolation. Optionally narrows
+        further by analysis_id.
+        """
         query_kwargs: dict = {
             "query_embeddings": [query_embedding],
             "n_results": top_k,
         }
+        where_filter: dict = {"user_id": user_id}
         if analysis_id is not None:
-            query_kwargs["where"] = {"analysis_id": analysis_id}
+            where_filter = {"$and": [{"user_id": user_id}, {"analysis_id": analysis_id}]}
+        query_kwargs["where"] = where_filter
         results = self.transcript_collection.query(**query_kwargs)
 
         matches: list[dict] = []

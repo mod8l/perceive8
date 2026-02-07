@@ -20,16 +20,15 @@ class TestAnalysisRoutes:
     async def test_get_analysis_not_found(self, async_client):
         """Test getting non-existent analysis returns 404."""
         analysis_id = uuid4()
-        response = await async_client.get(f"/analysis/{analysis_id}")
+        response = await async_client.get(f"/analysis/{analysis_id}", params={"user_id": "test-user"})
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_get_processing_runs(self, async_client):
-        """Test getting processing runs returns empty list."""
+    async def test_get_processing_runs_not_found(self, async_client):
+        """Test getting processing runs for non-existent analysis returns 404."""
         analysis_id = uuid4()
-        response = await async_client.get(f"/analysis/{analysis_id}/runs")
-        assert response.status_code == 200
-        assert response.json()["runs"] == []
+        response = await async_client.get(f"/analysis/{analysis_id}/runs", params={"user_id": "test-user"})
+        assert response.status_code == 404
 
 
 class TestSpeakerRoutes:
@@ -48,23 +47,23 @@ class TestSpeakerRoutes:
     async def test_get_speaker_not_found(self, async_client):
         """Test getting non-existent speaker returns 404."""
         speaker_id = uuid4()
-        response = await async_client.get(f"/speakers/{speaker_id}")
+        response = await async_client.get(f"/speakers/{speaker_id}", params={"user_id": "test-user"})
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_delete_speaker(self, async_client):
-        """Test delete speaker endpoint."""
+    async def test_delete_speaker_no_embedding_service(self, async_client):
+        """Test delete speaker without embedding service returns 503."""
         speaker_id = uuid4()
-        response = await async_client.delete(f"/speakers/{speaker_id}")
-        assert response.status_code == 200
+        response = await async_client.delete(f"/speakers/{speaker_id}", params={"user_id": "test-user"})
+        assert response.status_code == 503
 
 
 class TestQueryRoutes:
     """Tests for query endpoints."""
 
     @pytest.mark.asyncio
-    async def test_query_transcripts(self, async_client):
-        """Test querying transcripts returns placeholder response."""
+    async def test_query_transcripts_no_service(self, async_client):
+        """Test querying transcripts without query service returns 503."""
         response = await async_client.post(
             "/query",
             json={
@@ -72,10 +71,7 @@ class TestQueryRoutes:
                 "question": "What did they discuss?",
             },
         )
-        assert response.status_code == 200
-        data = response.json()
-        assert "answer" in data
-        assert "sources" in data
+        assert response.status_code == 503
 
 
 class TestErrorHandling:

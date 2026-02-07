@@ -60,6 +60,7 @@ class SpeakerListResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
+    user_id: str
     question: str
     analysis_id: Optional[str] = None
 

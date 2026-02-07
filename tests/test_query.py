@@ -86,7 +86,7 @@ async def test_embed_transcript_segments():
         {"speaker": "Alice", "start_time": 10.0, "end_time": 15.0, "text": "World"},
     ]
 
-    await service.embed_transcript_segments("analysis-1", segments)
+    await service.embed_transcript_segments("analysis-1", segments, user_id="user1")
 
     # Two non-empty segments should be embedded
     assert mock_openai.embeddings.create.await_count == 2
@@ -102,7 +102,7 @@ async def test_embed_transcript_segments_skips_whitespace():
         {"speaker": "A", "start_time": 0, "end_time": 1, "text": "   "},
     ]
 
-    await service.embed_transcript_segments("a-1", segments)
+    await service.embed_transcript_segments("a-1", segments, user_id="user1")
 
     mock_openai.embeddings.create.assert_not_awaited()
     mock_emb.add_transcript_embedding.assert_not_called()
@@ -126,7 +126,7 @@ async def test_answer_question_no_matches():
 
     mock_emb.search_transcripts.return_value = []
 
-    result = await service.answer_question("What happened?", analysis_id="a-1")
+    result = await service.answer_question("What happened?", user_id="user1", analysis_id="a-1")
 
     assert "No relevant transcript segments found" in result["answer"]
     assert result["sources"] == []
@@ -164,7 +164,7 @@ async def test_answer_question_with_matches():
     mock_chat_resp.choices = [mock_choice]
     mock_openai.chat.completions.create = AsyncMock(return_value=mock_chat_resp)
 
-    result = await service.answer_question("What was the revenue?", analysis_id="a-1")
+    result = await service.answer_question("What was the revenue?", user_id="user1", analysis_id="a-1")
 
     assert result["answer"] == "Revenue increased by 20%."
     assert len(result["sources"]) == 1
@@ -183,6 +183,7 @@ async def test_query_route_analysis_not_found(async_client):
     response = await async_client.post(
         "/query",
         json={
+            "user_id": "test-user",
             "question": "What happened?",
             "analysis_id": str(uuid4()),
         },
@@ -194,6 +195,6 @@ async def test_query_route_analysis_not_found(async_client):
 @pytest.mark.asyncio
 async def test_query_history_not_found(async_client):
     """GET /query/history/{analysis_id} with non-existent id should return 404."""
-    response = await async_client.get(f"/query/history/{uuid4()}")
+    response = await async_client.get(f"/query/history/{uuid4()}", params={"user_id": "test-user"})
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()

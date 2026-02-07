@@ -428,7 +428,7 @@ async def run_analysis_pipeline(
                 }
                 for seg in merged_segments
             ]
-            await query_service.embed_transcript_segments(analysis_id, segment_dicts)
+            await query_service.embed_transcript_segments(analysis_id, segment_dicts, user_id=user_id)
             logger.info("Pipeline [%s]: Embedding complete in %.2fs", analysis_id, time.monotonic() - t0)
         except Exception:
             logger.warning("Pipeline [%s]: transcript embedding failed", analysis_id, exc_info=True)

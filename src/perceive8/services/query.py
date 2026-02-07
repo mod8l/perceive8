@@ -38,13 +38,14 @@ class QueryService:
         return response.data[0].embedding
 
     async def embed_transcript_segments(
-        self, analysis_id: str, segments: list[dict]
+        self, analysis_id: str, segments: list[dict], user_id: str
     ) -> None:
         """Embed each segment's text and store in ChromaDB.
 
         Args:
             analysis_id: The analysis identifier.
             segments: List of dicts with keys: speaker, start_time, end_time, text.
+            user_id: The user identifier for data isolation.
         """
         for i, seg in enumerate(segments):
             text = seg.get("text", "")
@@ -54,6 +55,7 @@ class QueryService:
             segment_id = f"{analysis_id}:{i}"
             metadata = {
                 "analysis_id": analysis_id,
+                "user_id": user_id,
                 "speaker": seg.get("speaker", "UNKNOWN"),
                 "start_time": seg.get("start_time", 0.0),
                 "end_time": seg.get("end_time", 0.0),
@@ -67,11 +69,12 @@ class QueryService:
             logger.debug("Embedded segment %s", segment_id)
 
     async def answer_question(
-        self, question: str, analysis_id: Optional[str] = None, top_k: Optional[int] = None
+        self, question: str, user_id: str, analysis_id: Optional[str] = None, top_k: Optional[int] = None
     ) -> dict:
         """Answer a question about transcripts using RAG.
 
-        If analysis_id is None, searches across ALL analyses.
+        Always scoped to user_id. If analysis_id is None, searches across
+        all of the user's analyses.
 
         1. Embed the question.
         2. Search ChromaDB for relevant transcript segments.
@@ -85,9 +88,10 @@ class QueryService:
         # 1. Embed question
         query_embedding = await self.embed_text(question)
 
-        # 2. Search
+        # 2. Search (always scoped to user_id)
         matches = self._embedding_service.search_transcripts(
             query_embedding=query_embedding,
+            user_id=user_id,
             analysis_id=analysis_id,
             top_k=top_k,
         )
@@ -142,21 +146,33 @@ class QueryService:
             "sources": sources,
         }
 
-    async def backfill_from_db(self, db: AsyncSession) -> int:
-        """Backfill ChromaDB from all TranscriptSegment records in PostgreSQL.
+    async def backfill_from_db(self, db: AsyncSession, user_id: Optional[str] = None) -> int:
+        """Backfill ChromaDB from TranscriptSegment records in PostgreSQL.
 
         Embeds segments in batches of 50 to avoid rate limits.
+        If user_id is provided, only backfills segments for that user.
         Returns the count of segments embedded.
         """
+        from perceive8.models.database import Analysis, ProcessingRun, User
+
         BATCH_SIZE = 50
 
-        result = await db.execute(select(TranscriptSegment))
-        segments = result.scalars().all()
+        stmt = (
+            select(TranscriptSegment, User.external_id)
+            .join(ProcessingRun, TranscriptSegment.processing_run_id == ProcessingRun.id)
+            .join(Analysis, ProcessingRun.analysis_id == Analysis.id)
+            .join(User, Analysis.user_id == User.id)
+        )
+        if user_id is not None:
+            stmt = stmt.where(User.external_id == user_id)
+
+        result = await db.execute(stmt)
+        rows = result.all()
 
         count = 0
-        for i in range(0, len(segments), BATCH_SIZE):
-            batch = segments[i : i + BATCH_SIZE]
-            for seg in batch:
+        for i in range(0, len(rows), BATCH_SIZE):
+            batch = rows[i : i + BATCH_SIZE]
+            for seg, ext_user_id in batch:
                 text = seg.text
                 if not text or not text.strip():
                     continue
@@ -164,6 +180,7 @@ class QueryService:
                 segment_id = f"backfill:{seg.id}"
                 metadata = {
                     "analysis_id": str(seg.processing_run_id),
+                    "user_id": ext_user_id,
                     "speaker": "UNKNOWN",
                     "start_time": seg.start_time,
                     "end_time": seg.end_time,
@@ -176,7 +193,7 @@ class QueryService:
                 )
                 count += 1
             # Small delay between batches to respect rate limits
-            if i + BATCH_SIZE < len(segments):
+            if i + BATCH_SIZE < len(rows):
                 await asyncio.sleep(1.0)
 
         logger.info("Backfilled %d transcript segments into ChromaDB", count)
