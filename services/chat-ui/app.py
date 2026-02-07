@@ -171,12 +171,22 @@ async def _handle_file_path(file_path: str, language: str = DEFAULT_LANGUAGE):
             msg.content = (
                 f"📁 Reading file: **{file_name}** ({size_mb:.1f} MB)... ✓\n"
                 f"⬆️ Uploading to perceive8 API... ✓\n"
+                f"✅ Analysis complete! Generating summary..."
+            )
+            await msg.update()
+
+            summary_content = await _generate_summary(client, analysis_id, file_name)
+            msg.content = (
+                f"📁 Reading file: **{file_name}** ({size_mb:.1f} MB)... ✓\n"
+                f"⬆️ Uploading to perceive8 API... ✓\n"
                 f"✅ **Analysis complete!**\n\n"
                 f"- Analysis ID: `{analysis_id}`\n"
                 f"- Language: {lang}\n\n"
-                "You can now ask questions about this audio."
             )
             await msg.update()
+
+            summary_msg = cl.Message(content=summary_content)
+            await summary_msg.send()
         except httpx.HTTPStatusError as e:
             logger.error(f"API call failed: {e}")
             msg.content = f"❌ Failed to analyze **{file_name}**: {e.response.status_code} - {e.response.text}"
@@ -230,12 +240,22 @@ async def _handle_audio_upload(elements: list[Element], language: str = DEFAULT_
                 msg.content = (
                     f"📁 Reading **{el.name}** ({size_mb:.1f} MB)... ✓\n"
                     f"⬆️ Uploading to perceive8 API... ✓\n"
+                    f"✅ Analysis complete! Generating summary..."
+                )
+                await msg.update()
+
+                summary_content = await _generate_summary(client, analysis_id, el.name)
+                msg.content = (
+                    f"📁 Reading **{el.name}** ({size_mb:.1f} MB)... ✓\n"
+                    f"⬆️ Uploading to perceive8 API... ✓\n"
                     f"✅ **Analysis complete!**\n\n"
                     f"- Analysis ID: `{analysis_id}`\n"
                     f"- Language: {lang}\n\n"
-                    "You can now ask questions about this audio."
                 )
                 await msg.update()
+
+                summary_msg = cl.Message(content=summary_content)
+                await summary_msg.send()
             except httpx.HTTPStatusError as e:
                 logger.error(f"API call failed: {e}")
                 msg.content = f"❌ Failed to analyze **{el.name}**: {e.response.status_code} - {e.response.text}"
@@ -244,6 +264,45 @@ async def _handle_audio_upload(elements: list[Element], language: str = DEFAULT_
                 logger.error(f"API call failed: {e}")
                 msg.content = f"❌ Error analyzing **{el.name}**: {e}"
                 await msg.update()
+
+
+async def _generate_summary(client: httpx.AsyncClient, analysis_id: str, filename: str) -> str:
+    """Query the RAG for a comprehensive summary of the analyzed recording."""
+    summary_question = (
+        "Please provide a comprehensive summary of this recording. "
+        "Include the main topics discussed, key points, speakers involved, "
+        "and any important decisions or action items."
+    )
+    try:
+        resp = await client.post(
+            f"{API_URL}/query",
+            json={"question": summary_question, "analysis_id": analysis_id},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        answer = data.get("answer", "No summary available.")
+        content = f"📋 **Summary of {filename}:**\n\n{answer}"
+
+        sources = data.get("sources")
+        if sources:
+            content += "\n\n**Sources:**\n"
+            for src in sources:
+                speaker = src.get("speaker_name", "Unknown")
+                start = src.get("start_time", 0)
+                end = src.get("end_time", 0)
+                text = src.get("text", "")
+                score = src.get("relevance_score", 0)
+                content += (
+                    f"\n> 🗣 **{speaker}** [{start:.1f}s – {end:.1f}s] "
+                    f"(relevance: {score:.2f})\n> {text}\n"
+                )
+
+        return content
+    except Exception as e:
+        logger.error(f"Summary generation failed: {e}")
+        return f"⚠️ Could not generate summary: {e}"
 
 
 async def _handle_question(question: str):
